@@ -1,16 +1,9 @@
 import http from 'http';
 import path from 'path';
 import fs from 'fs';
+import { appConfig } from '../core/AppConfig';
 import { IStorageService } from '../contracts/IStorageService';
-import { ILLMProviderService } from '../contracts/ILLMProviderService';
-import { AIRequestBody } from '../domain/types';
 import { LLMProviderFactory } from '../services/LLMProviderFactory.js';
-import { GraphAnalyzerService } from '../services/GraphAnalyzerService.js';
-import { HardwareMonitorService } from '../services/HardwareMonitorService.js';
-import { eventManager } from '../services/EventManager.js';
-import { LocalKnowledgeBaseService } from '../services/LocalKnowledgeBaseService.js';
-import { OllamaManagerService } from '../services/OllamaManagerService.js';
-import { TypescriptChunker } from '../services/Chunker/TypescriptChunker.js';
 import { ExtensionManager } from '../core/ExtensionManager.js';
 import { Router } from '../core/Router.js';
 
@@ -90,11 +83,7 @@ export class AppServer {
 
             // Settings GET
             if (url === '/api/settings' && req.method === 'GET') {
-                return this.jsonResponse(res, 200, {
-                    OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
-                    GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
-                    AI_MODEL: process.env.AI_MODEL || ''
-                });
+                return this.jsonResponse(res, 200, appConfig.toSafeJSON());
             }
 
             // Settings POST
@@ -102,13 +91,11 @@ export class AppServer {
                 const raw = await this.readBody(req);
                 const body = JSON.parse(raw);
                 
-                if (body.OPENAI_API_KEY !== undefined) process.env.OPENAI_API_KEY = body.OPENAI_API_KEY;
-                if (body.GEMINI_API_KEY !== undefined) process.env.GEMINI_API_KEY = body.GEMINI_API_KEY;
-                if (body.AI_MODEL !== undefined) process.env.AI_MODEL = body.AI_MODEL;
+                if (body.OPENAI_API_KEY !== undefined) appConfig.openaiApiKey = body.OPENAI_API_KEY;
+                if (body.GEMINI_API_KEY !== undefined) appConfig.geminiApiKey = body.GEMINI_API_KEY;
+                if (body.AI_MODEL !== undefined) appConfig.aiModel = body.AI_MODEL;
 
-                // Simple append to .env
-                const envContent = `OPENAI_API_KEY=${process.env.OPENAI_API_KEY || ''}\nGEMINI_API_KEY=${process.env.GEMINI_API_KEY || ''}\nAI_MODEL=${process.env.AI_MODEL || ''}\n`;
-                fs.writeFileSync(path.join(this.toolDir, '.env'), envContent);
+                appConfig.saveToEnv();
                 
                 return this.jsonResponse(res, 200, { ok: true });
             }

@@ -12,6 +12,9 @@ dist/
 # AI Cache (local analysis data)
 .ai_cache/
 
+# GitHub clone cache (cloned repos for remote analysis)
+.github-cache/
+
 # Chat history (personal data)
 chat-history/
 

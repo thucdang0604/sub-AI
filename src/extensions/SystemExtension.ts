@@ -46,8 +46,8 @@ export class SystemExtension implements IExtension {
       res.end(JSON.stringify(hwInfo));
     });
 
-    // Settings endpoint
-    router.get('/api/settings', async (req, res, body) => {
+    // System info endpoint (separate from /api/settings which handles API keys)
+    router.get('/api/system', async (req, res, body) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ 
         version: this.version,

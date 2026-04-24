@@ -1,11 +1,12 @@
 import type { ILLMProviderService } from '../contracts/ILLMProviderService';
 import type { LLMModelInfo } from '../domain/types';
+import { appConfig } from '../core/AppConfig';
 
 export class OllamaProviderService implements ILLMProviderService {
     private baseUrl: string;
 
     constructor(baseUrl?: string) {
-        this.baseUrl = baseUrl || process.env.OLLAMA_HOST || 'http://localhost:11434';
+        this.baseUrl = baseUrl || appConfig.ollamaHost;
     }
 
     async checkHealth(): Promise<{ ok: boolean; modelCount?: number; error?: string }> {

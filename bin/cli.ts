@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { config as dotenvConfig } from 'dotenv';
+dotenvConfig();
+import { appConfig } from '../src/core/AppConfig';
 import { StorageService } from '../src/services/StorageService';
 import { GraphAnalyzerService } from '../src/services/GraphAnalyzerService';
 import { LLMProviderFactory } from '../src/services/LLMProviderFactory.js';
@@ -62,7 +65,7 @@ async function run() {
         const systemPrompt = `Bạn là một AI Context Router / System Architect xuất sắc. Dưới đây là Bản đồ phụ thuộc Code của dự án:\n\n${aiMapContent}\n\nYêu cầu tính năng mới từ user: "${prompt}"\n\nHãy phân tích và trả về danh sách CÁC FILE CẦN KIỂM TRA HOẶC SỬA ĐỔI để thực hiện yêu cầu. Trình bày dạng các gạch đầu dòng kèm lý do CỰC KỲ NGẮN GỌN cho mỗi file. Nếu cần tạo file mới, hãy dự định tên file đó.\nChỉ trả lời chuyên môn, không nói dài dòng.`;
         
         const defaultModel = modelList.length > 0 ? modelList[0]?.name : 'qwen2.5:7b';
-        const model = process.env.AI_MODEL || process.env.OLLAMA_MODEL || defaultModel || 'qwen2.5:7b';
+        const model = appConfig.aiModel || appConfig.ollamaModel || defaultModel || 'qwen2.5:7b';
         
         const llm = LLMProviderFactory.getProviderForModel(model);
 

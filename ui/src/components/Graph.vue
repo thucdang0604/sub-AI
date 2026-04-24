@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch, computed } from 'vue'
 import * as d3 from 'd3'
+import { LAYER_MAP, LAYER_LABELS, nodeRadius, getCategoryColor } from '../utils/graphConstants'
 
 const props = defineProps<{
   data: any,
@@ -27,27 +28,6 @@ const emit = defineEmits<{
 }>()
 
 const containerRef = ref<HTMLElement | null>(null)
-
-const LAYER_MAP: Record<string, number> = {
-  'page': 0, 'layout': 0, 'view': 0, 'screen': 0,
-  'component': 1, 'widget': 1,
-  'api': 2, 'route': 2, 'controller': 2, 'middleware': 2,
-  'service': 3, 'hook': 3, 'util': 3, 'lib': 3, 'helper': 3,
-  'model': 4, 'schema': 4, 'type': 4, 'store': 4,
-  'config': 5, 'constant': 5,
-  'other': 3,
-}
-
-const LAYER_LABELS = [
-  { emoji: '📱', label: 'Giao diện (Presentation)' },
-  { emoji: '🧩', label: 'Thành phần (Components)' },
-  { emoji: '🔌', label: 'API / Routes' },
-  { emoji: '⚙️', label: 'Dịch vụ / Logic (Services)' },
-  { emoji: '💾', label: 'Dữ liệu / Models' },
-  { emoji: '🔧', label: 'Cấu hình (Config)' },
-]
-
-const nodeRadius = (d: any) => Math.max(12, Math.min(35, Math.sqrt(d.lines || 100) * 1.5))
 
 // Render function
 const renderGraph = () => {
@@ -205,7 +185,7 @@ const renderGraph = () => {
     .attr('stroke-width', 1.5)
 
   // Node Colors based on Category
-  const colorScale = d3.scaleOrdinal(d3.schemeCategory10)
+
 
   // Warning stroke helpers
   const getWarningStroke = (d: any) => {
@@ -226,7 +206,7 @@ const renderGraph = () => {
     .data(nodes)
     .join('circle')
     .attr('r', (d: any) => nodeRadius(d))
-    .attr('fill', (d: any) => colorScale(d.category || 'unknown'))
+    .attr('fill', (d: any) => getCategoryColor(d.category))
     .attr('stroke', (d: any) => getWarningStroke(d))
     .attr('stroke-width', (d: any) => getWarningStrokeWidth(d))
     .attr('stroke-dasharray', (d: any) => d.isOrphan ? '4,4' : null)

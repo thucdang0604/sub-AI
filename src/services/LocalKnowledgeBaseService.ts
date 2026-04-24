@@ -5,6 +5,7 @@ import { OllamaManagerService } from './OllamaManagerService.js';
 import { CodeChunk, IChunker } from './Chunker/IChunker.js';
 import { eventManager } from './EventManager.js';
 import { NpuEmbeddingBridge } from './NpuEmbeddingBridge.js';
+import { registerCosineSimilarity, initChunkTables } from './KBDatabase.js';
 
 export interface SearchResult {
     chunk_id: string;
@@ -58,72 +59,11 @@ export class LocalKnowledgeBaseService {
     }
 
     private initUDF() {
-        // Register cosine_similarity function
-        this.db.function('cosine_similarity', { deterministic: true }, (vecAStr: any, vecBStr: any) => {
-            if (!vecAStr || !vecBStr) return 0;
-            const a = JSON.parse(vecAStr);
-            const b = JSON.parse(vecBStr);
-            if (a.length !== b.length) return 0;
-
-            let dotProduct = 0;
-            let normA = 0;
-            let normB = 0;
-            for (let i = 0; i < a.length; i++) {
-                dotProduct += a[i] * b[i];
-                normA += a[i] * a[i];
-                normB += b[i] * b[i];
-            }
-            if (normA === 0 || normB === 0) return 0;
-            return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-        });
+        registerCosineSimilarity(this.db);
     }
 
     private initTables() {
-        this.db.exec(`
-            CREATE TABLE IF NOT EXISTS chunks (
-                id TEXT PRIMARY KEY,
-                file_path TEXT NOT NULL,
-                symbol_name TEXT,
-                start_line INTEGER,
-                end_line INTEGER,
-                code_content TEXT,
-                dependencies TEXT,
-                summary TEXT,
-                embedding TEXT, -- JSON array
-                last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-        this.db.exec(`
-            CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(
-                file_path,
-                symbol_name,
-                code_content,
-                summary,
-                content='chunks',
-                content_rowid='rowid'
-            );
-        `);
-
-        // Trigger để tự động cập nhật FTS khi bảng chunks thay đổi
-        this.db.exec(`
-            CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
-                INSERT INTO fts_chunks(rowid, file_path, symbol_name, code_content, summary)
-                VALUES (new.rowid, new.file_path, new.symbol_name, new.code_content, new.summary);
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
-                INSERT INTO fts_chunks(fts_chunks, rowid, file_path, symbol_name, code_content, summary)
-                VALUES('delete', old.rowid, old.file_path, old.symbol_name, old.code_content, old.summary);
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
-                INSERT INTO fts_chunks(fts_chunks, rowid, file_path, symbol_name, code_content, summary)
-                VALUES('delete', old.rowid, old.file_path, old.symbol_name, old.code_content, old.summary);
-                INSERT INTO fts_chunks(rowid, file_path, symbol_name, code_content, summary)
-                VALUES (new.rowid, new.file_path, new.symbol_name, new.code_content, new.summary);
-            END;
-        `);
+        initChunkTables(this.db);
     }
 
     public async indexChunk(chunk: CodeChunk, modelName?: string) {

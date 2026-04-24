@@ -1,0 +1,6 @@
+export { default as ChatTab } from './ChatTab.vue'
+export { default as FeaturesTab } from './FeaturesTab.vue'
+export { default as HealthTab } from './HealthTab.vue'
+export { default as KnowledgeTab } from './KnowledgeTab.vue'
+export { default as GuideTab } from './GuideTab.vue'
+export { default as SettingsTab } from './SettingsTab.vue'

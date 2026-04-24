@@ -1,12 +1,13 @@
 import type { ILLMProviderService } from '../contracts/ILLMProviderService';
 import type { LLMModelInfo } from '../domain/types';
+import { appConfig } from '../core/AppConfig';
 
 export class OpenAIProviderService implements ILLMProviderService {
     private apiKey: string;
     private baseUrl: string;
 
     constructor() {
-        this.apiKey = process.env.OPENAI_API_KEY || '';
+        this.apiKey = appConfig.openaiApiKey;
         this.baseUrl = 'https://api.openai.com/v1';
     }
 

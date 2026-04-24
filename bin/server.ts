@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import { config as dotenvConfig } from 'dotenv';
+dotenvConfig(); // Load .env before anything else
+import '../src/core/AppConfig'; // Initialize centralized config singleton
 import { StorageService } from '../src/services/StorageService';
-import { OllamaProviderService } from '../src/services/OllamaProviderService';
 import { AppServer } from '../src/presentation/Server';
 import path from 'path';
 

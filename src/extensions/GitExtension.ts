@@ -1,154 +1,484 @@
 import { IExtension, IExtensionContext, McpToolDeclaration } from '../core/interfaces/IExtension';
 import { IRouter } from '../core/interfaces/IRouter';
+import { appConfig } from '../core/AppConfig';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import path from 'path';
+import fs from 'fs';
 
 const execAsync = promisify(exec);
 
+interface GitHubRepoInfo {
+    full_name: string; owner: string; repo: string; description: string;
+    stars: number; forks: number; open_issues: number; default_branch: string;
+    language: string; updated_at: string; private: boolean;
+}
+
+interface GitHubCommit {
+    sha: string; message: string; author: string; date: string; url: string;
+}
+
+interface GitHubPR {
+    number: number; title: string; state: string; author: string;
+    created_at: string; updated_at: string; url: string; draft: boolean;
+}
+
+interface GitHubIssue {
+    number: number; title: string; state: string; labels: string[];
+    author: string; created_at: string; url: string; body: string;
+}
+
 export class GitExtension implements IExtension {
     name = 'GitManager';
-    version = '1.0.0';
+    version = '2.0.0';
     private context?: IExtensionContext;
+    private cacheDir = '';
 
     async initialize(context: IExtensionContext): Promise<void> {
         this.context = context;
-        console.log(`[GitExtension] Initialized.`);
+        this.cacheDir = path.resolve(process.cwd(), '.github-cache');
+        if (!fs.existsSync(this.cacheDir)) fs.mkdirSync(this.cacheDir, { recursive: true });
+        console.log(`[GitExtension] Initialized. Cache: ${this.cacheDir}`);
     }
 
-    registerRoutes(router: IRouter): void {
-        router.post('/api/git/recent', async (req, res, body) => {
-            try {
-                const { targetDir, limit = 10 } = body;
-                if (!targetDir) {
-                    res.writeHead(400, { "Content-Type": "application/json" });
-                    res.end(JSON.stringify({ error: "Missing targetDir" }));
-                    return;
-                }
-                const result = await this.getRecentChanges(targetDir, limit);
-                res.writeHead(200, { "Content-Type": "application/json" });
-                res.end(JSON.stringify(result));
-            } catch (error: any) {
-                // If git is not available (not a git repo), return empty array gracefully
-                if (error.message?.includes('not a git repository')) {
-                    res.writeHead(200, { "Content-Type": "application/json" });
-                    res.end(JSON.stringify([]));
-                    return;
-                }
-                res.writeHead(500, { "Content-Type": "application/json" });
-                res.end(JSON.stringify({ error: error.message }));
-            }
+    // ─── GitHub API helpers ───
+    private getToken(): string {
+        return appConfig.githubToken;
+    }
+
+    private async ghFetch(endpoint: string, method = 'GET', body?: any): Promise<any> {
+        const token = this.getToken();
+        const headers: Record<string, string> = {
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'Sub-AI/2.0',
+        };
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        if (body) headers['Content-Type'] = 'application/json';
+
+        const resp = await fetch(`https://api.github.com${endpoint}`, {
+            method, headers, body: body ? JSON.stringify(body) : null,
         });
+
+        if (!resp.ok) {
+            const err = await resp.text();
+            throw new Error(`GitHub API ${resp.status}: ${err}`);
+        }
+        return resp.json();
     }
 
-    registerMcpTools(): McpToolDeclaration[] {
-        return [
-            {
-                declaration: {
-                    name: "get_recent_commits",
-                    description: "Lấy danh sách các commit gần đây cùng với các file đã thay đổi. Hữu ích để AI hiểu bối cảnh và lịch sử thay đổi của dự án.",
-                    inputSchema: {
-                        type: "object",
-                        properties: {
-                            targetDir: { 
-                                type: "string",
-                                description: "Thư mục gốc của dự án chứa thư mục .git" 
-                            },
-                            limit: { 
-                                type: "number",
-                                description: "Số lượng commit muốn lấy (mặc định 5)"
-                            }
-                        },
-                        required: ["targetDir"]
-                    }
-                },
-                handler: async (args: any) => {
-                    const { targetDir, limit = 5 } = args;
-                    if (!targetDir) {
-                        throw new Error("Missing targetDir");
-                    }
-                    try {
-                        const result = await this.getRecentChanges(targetDir, limit);
-                        return {
-                            content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
-                        };
-                    } catch (e: any) {
-                        return { isError: true, content: [{ type: "text", text: `Git Error: ${e.message}` }] };
-                    }
-                }
-            },
-            {
-                declaration: {
-                    name: "get_file_history",
-                    description: "Lấy lịch sử commit và nội dung thay đổi (git patch) của một file cụ thể để xem ai đã sửa, sửa lúc nào và sửa đoạn nào.",
-                    inputSchema: {
-                        type: "object",
-                        properties: {
-                            targetDir: { type: "string" },
-                            filePath: { 
-                                type: "string",
-                                description: "Đường dẫn tương đối của file (vd: src/components/Button.tsx)" 
-                            },
-                            limit: { 
-                                type: "number",
-                                description: "Số lượng commit gần nhất của file này (mặc định 3)" 
-                            }
-                        },
-                        required: ["targetDir", "filePath"]
-                    }
-                },
-                handler: async (args: any) => {
-                    const { targetDir, filePath, limit = 3 } = args;
-                    if (!targetDir || !filePath) {
-                        throw new Error("Missing targetDir or filePath");
-                    }
-                    try {
-                        const { stdout } = await execAsync(`git log -p -n ${limit} -- "${filePath}"`, { cwd: targetDir });
-                        return {
-                            content: [{ type: "text", text: stdout || "No history found or not a git repository." }]
-                        };
-                    } catch (e: any) {
-                        return { isError: true, content: [{ type: "text", text: `Git Error: ${e.message}` }] };
-                    }
-                }
-            }
-        ];
+    parseGitHubUrl(url: string): { owner: string; repo: string } | null {
+        const m = url.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+        if (!m) return null;
+        return { owner: m[1] || '', repo: m[2] || '' };
     }
 
-    private async getRecentChanges(targetDir: string, limit: number) {
-        // Lấy danh sách commit kèm tên tác giả, thời gian, và danh sách file thay đổi
-        const cmd = `git log -n ${limit} --pretty=format:"%h|%an|%ad|%s" --name-status --date=short`;
-        const { stdout } = await execAsync(cmd, { cwd: targetDir });
-        
-        const lines = stdout.split('\n');
-        const commits: any[] = [];
-        let currentCommit: any = null;
+    private getClonePath(owner: string, repo: string): string {
+        return path.join(this.cacheDir, owner, repo);
+    }
 
-        for (const line of lines) {
-            if (!line.trim()) continue;
-            
-            // Nếu dòng có chứa '|' và độ dài mã hash ở đầu, thì đây là dòng header của commit
-            if (line.includes('|') && /^[a-f0-9]{7,40}\|/.test(line)) {
-                const parts = line.split('|');
-                currentCommit = {
-                    hash: parts[0],
-                    author: parts[1],
-                    date: parts[2],
-                    message: parts.slice(3).join('|'), // Ghép lại nếu message có dấu |
-                    changes: []
-                };
-                commits.push(currentCommit);
-            } else if (currentCommit) {
-                // Các dòng tiếp theo là danh sách file (VD: "M\tsrc/file.ts" hoặc "A\tnew.ts")
-                const parts = line.split('\t');
-                if (parts.length >= 2) {
-                    currentCommit.changes.push({
-                        status: (parts[0] ?? '').trim(),
-                        file: (parts[1] ?? '').trim()
+    private async cloneOrPull(owner: string, repo: string): Promise<string> {
+        const dir = this.getClonePath(owner, repo);
+        const token = this.getToken();
+        const authUrl = token
+            ? `https://${token}@github.com/${owner}/${repo}.git`
+            : `https://github.com/${owner}/${repo}.git`;
+
+        if (fs.existsSync(path.join(dir, '.git'))) {
+            await execAsync('git pull --ff-only', { cwd: dir }).catch(() => {});
+        } else {
+            fs.mkdirSync(path.dirname(dir), { recursive: true });
+            await execAsync(`git clone --depth 50 "${authUrl}" "${dir}"`);
+        }
+        return dir;
+    }
+
+    // ─── Issue generation from health report ───
+    generateIssuesFromHealth(health: any): any[] {
+        const issues: any[] = [];
+
+        // Security warnings → High priority issues
+        for (const w of (health.securityWarnings || [])) {
+            for (const warn of w.warnings) {
+                if (warn.severity === 'high' || warn.type === 'env-leak' || warn.type === 'hardcoded-secret') {
+                    issues.push({
+                        title: `[Sub-AI] 🔴 Security: ${warn.type} in ${w.file}`,
+                        body: `### 🔴 Security Issue\n**File**: \`${w.file}\` (${w.lines} lines)\n**Severity**: ${warn.severity}\n**Type**: ${warn.type}\n\n#### Mô tả\n${warn.message}\n\n#### Đề xuất\n- Tập trung env vars vào config service\n- Xem xét loại bỏ hardcoded secrets\n\n---\n*Auto-generated by [Sub-AI](https://github.com/thucdang0604/sub-AI) Health Audit*`,
+                        labels: ['sub-ai-audit', 'security', 'technical-debt'],
+                        priority: 'high',
                     });
                 }
             }
         }
 
+        // God files → Medium priority
+        for (const g of (health.godFiles || [])) {
+            issues.push({
+                title: `[Sub-AI] 🟡 Refactor: God file ${g.file} (${g.lines} lines)`,
+                body: `### 🟡 God File Detected\n**File**: \`${g.file}\`\n**Lines**: ${g.lines} | **Fan-out**: ${g.fanOut} | **Fan-in**: ${g.fanIn}\n\n#### Mô tả\nFile quá lớn, vượt ngưỡng 400 dòng. Khó bảo trì và dễ xảy ra conflict.\n\n#### Đề xuất\n- Tách thành các module nhỏ hơn theo chức năng\n- Mỗi module ≤ 200 dòng\n\n---\n*Auto-generated by [Sub-AI](https://github.com/thucdang0604/sub-AI)*`,
+                labels: ['sub-ai-audit', 'refactor', 'technical-debt'],
+                priority: 'medium',
+            });
+        }
+
+        // Circular dependencies → High priority
+        for (const c of (health.circularDependencies || [])) {
+            issues.push({
+                title: `[Sub-AI] 🔴 Circular dependency: ${c.from} ↔ ${c.to}`,
+                body: `### 🔴 Circular Dependency\n**From**: \`${c.from}\`\n**To**: \`${c.to}\`\n\n#### Đề xuất\n- Extract shared interface/types ra file riêng\n- Sử dụng dependency injection\n\n---\n*Auto-generated by [Sub-AI](https://github.com/thucdang0604/sub-AI)*`,
+                labels: ['sub-ai-audit', 'architecture', 'technical-debt'],
+                priority: 'high',
+            });
+        }
+
+        // Dead exports → Low priority
+        for (const d of (health.deadExportFiles || [])) {
+            issues.push({
+                title: `[Sub-AI] 🟢 Dead exports in ${d.file}`,
+                body: `### 🟢 Dead Exports\n**File**: \`${d.file}\` (${d.lines} lines)\n**Exports**: ${d.exportCount} exported symbols, 0 importers\n\n#### Đề xuất\n- Xóa exports không sử dụng\n- Hoặc kết nối lại nếu đây là public API\n\n---\n*Auto-generated by [Sub-AI](https://github.com/thucdang0604/sub-AI)*`,
+                labels: ['sub-ai-audit', 'cleanup'],
+                priority: 'low',
+            });
+        }
+
+        return issues;
+    }
+
+    // ─── Routes ───
+    registerRoutes(router: IRouter): void {
+        // Existing: local git recent
+        router.post('/api/git/recent', async (req, res, body) => {
+            try {
+                const { targetDir, limit = 10 } = body;
+                if (!targetDir) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Missing targetDir" })); return; }
+                const result = await this.getRecentChanges(targetDir, limit);
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify(result));
+            } catch (error: any) {
+                if (error.message?.includes('not a git repository')) {
+                    res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify([])); return;
+                }
+                res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: error.message }));
+            }
+        });
+
+        // GitHub: analyze remote repo
+        router.post('/api/github/analyze', async (req, res, body) => {
+            try {
+                const parsed = this.parseGitHubUrl(body.url);
+                if (!parsed) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Invalid GitHub URL" })); return; }
+                const dir = await this.cloneOrPull(parsed.owner, parsed.repo);
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: true, localPath: dir, owner: parsed.owner, repo: parsed.repo }));
+            } catch (e: any) {
+                res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+
+        // GitHub: repo info
+        router.post('/api/github/info', async (req, res, body) => {
+            try {
+                const parsed = this.parseGitHubUrl(body.url);
+                if (!parsed) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Invalid GitHub URL" })); return; }
+                const data = await this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}`);
+                const info: GitHubRepoInfo = {
+                    full_name: data.full_name, owner: parsed.owner, repo: parsed.repo,
+                    description: data.description || '', stars: data.stargazers_count,
+                    forks: data.forks_count, open_issues: data.open_issues_count,
+                    default_branch: data.default_branch, language: data.language || 'Unknown',
+                    updated_at: data.updated_at, private: data.private,
+                };
+                res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(info));
+            } catch (e: any) {
+                res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+
+        // GitHub: commits
+        router.post('/api/github/commits', async (req, res, body) => {
+            try {
+                const parsed = this.parseGitHubUrl(body.url);
+                if (!parsed) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Invalid GitHub URL" })); return; }
+                const data = await this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/commits?per_page=${body.limit || 20}`);
+                const commits: GitHubCommit[] = data.map((c: any) => ({
+                    sha: c.sha?.substring(0, 7), message: c.commit?.message?.split('\n')[0],
+                    author: c.commit?.author?.name || c.author?.login || 'unknown',
+                    date: c.commit?.author?.date?.substring(0, 10), url: c.html_url,
+                }));
+                res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(commits));
+            } catch (e: any) {
+                res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+
+        // GitHub: pull requests
+        router.post('/api/github/pulls', async (req, res, body) => {
+            try {
+                const parsed = this.parseGitHubUrl(body.url);
+                if (!parsed) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Invalid GitHub URL" })); return; }
+                const data = await this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/pulls?state=all&per_page=${body.limit || 20}`);
+                const pulls: GitHubPR[] = data.map((p: any) => ({
+                    number: p.number, title: p.title, state: p.state,
+                    author: p.user?.login || 'unknown', created_at: p.created_at?.substring(0, 10),
+                    updated_at: p.updated_at?.substring(0, 10), url: p.html_url, draft: p.draft || false,
+                }));
+                res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(pulls));
+            } catch (e: any) {
+                res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+
+        // GitHub: list issues
+        router.post('/api/github/issues', async (req, res, body) => {
+            try {
+                const parsed = this.parseGitHubUrl(body.url);
+                if (!parsed) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Invalid GitHub URL" })); return; }
+                const data = await this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/issues?state=all&per_page=${body.limit || 30}`);
+                const issues: GitHubIssue[] = data.filter((i: any) => !i.pull_request).map((i: any) => ({
+                    number: i.number, title: i.title, state: i.state,
+                    labels: i.labels?.map((l: any) => l.name) || [],
+                    author: i.user?.login || 'unknown', created_at: i.created_at?.substring(0, 10),
+                    url: i.html_url, body: i.body?.substring(0, 200) || '',
+                }));
+                res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(issues));
+            } catch (e: any) {
+                res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+
+        // GitHub: preview issues from health
+        router.post('/api/github/issues/preview', async (req, res, body) => {
+            try {
+                const issues = this.generateIssuesFromHealth(body.healthReport);
+                res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(issues));
+            } catch (e: any) {
+                res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+
+        // GitHub: create single issue
+        router.post('/api/github/issues/create', async (req, res, body) => {
+            try {
+                if (!this.getToken()) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "GitHub token required" })); return; }
+                const parsed = this.parseGitHubUrl(body.url);
+                if (!parsed) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Invalid GitHub URL" })); return; }
+                const result = await this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/issues`, 'POST', {
+                    title: body.title, body: body.body, labels: body.labels || [],
+                });
+                res.writeHead(201, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: true, number: result.number, url: result.html_url }));
+            } catch (e: any) {
+                res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+
+        // GitHub: batch create issues
+        router.post('/api/github/issues/create-batch', async (req, res, body) => {
+            try {
+                if (!this.getToken()) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "GitHub token required" })); return; }
+                const parsed = this.parseGitHubUrl(body.url);
+                if (!parsed) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Invalid GitHub URL" })); return; }
+                const created: any[] = [];
+                for (const issue of (body.issues || [])) {
+                    try {
+                        const r = await this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/issues`, 'POST', {
+                            title: issue.title, body: issue.body, labels: issue.labels || [],
+                        });
+                        created.push({ ok: true, number: r.number, url: r.html_url, title: issue.title });
+                    } catch (e: any) {
+                        created.push({ ok: false, title: issue.title, error: e.message });
+                    }
+                }
+                res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ created, total: created.length, success: created.filter(c => c.ok).length }));
+            } catch (e: any) {
+                res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+
+        // GitHub: sync all data
+        router.post('/api/github/sync', async (req, res, body) => {
+            try {
+                const parsed = this.parseGitHubUrl(body.url);
+                if (!parsed) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Invalid GitHub URL" })); return; }
+                const [info, commitsRaw, pullsRaw, issuesRaw] = await Promise.all([
+                    this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}`),
+                    this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/commits?per_page=20`),
+                    this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/pulls?state=all&per_page=15`),
+                    this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/issues?state=all&per_page=30`),
+                ]);
+                const result = {
+                    info: { full_name: info.full_name, description: info.description, stars: info.stargazers_count, forks: info.forks_count, open_issues: info.open_issues_count, language: info.language, private: info.private, default_branch: info.default_branch, updated_at: info.updated_at },
+                    commits: commitsRaw.map((c: any) => ({ sha: c.sha?.substring(0, 7), message: c.commit?.message?.split('\n')[0], author: c.commit?.author?.name || c.author?.login, date: c.commit?.author?.date?.substring(0, 10), url: c.html_url })),
+                    pulls: pullsRaw.map((p: any) => ({ number: p.number, title: p.title, state: p.state, author: p.user?.login, created_at: p.created_at?.substring(0, 10), url: p.html_url, draft: p.draft })),
+                    issues: issuesRaw.filter((i: any) => !i.pull_request).map((i: any) => ({ number: i.number, title: i.title, state: i.state, labels: i.labels?.map((l: any) => l.name), author: i.user?.login, created_at: i.created_at?.substring(0, 10), url: i.html_url })),
+                };
+                res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(result));
+            } catch (e: any) {
+                res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+
+        // Settings: save/check GitHub token
+        router.post('/api/settings/github-token', async (req, res, body) => {
+            try {
+                const envPath = path.resolve(process.cwd(), '.env');
+                let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
+                if (content.includes('GITHUB_TOKEN=')) {
+                    content = content.replace(/GITHUB_TOKEN=.*/g, `GITHUB_TOKEN=${body.token || ''}`);
+                } else {
+                    content += `\nGITHUB_TOKEN=${body.token || ''}`;
+                }
+                fs.writeFileSync(envPath, content, 'utf-8');
+                appConfig.githubToken = body.token || '';
+                res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: true }));
+            } catch (e: any) {
+                res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+
+        router.get('/api/settings/github-token/status', async (req, res) => {
+            const hasToken = !!this.getToken();
+            res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ hasToken }));
+        });
+
+        // GitHub: close issue with comment
+        router.post('/api/github/issues/close', async (req, res, body) => {
+            try {
+                if (!this.getToken()) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "GitHub token required" })); return; }
+                const parsed = this.parseGitHubUrl(body.url);
+                if (!parsed) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Invalid GitHub URL" })); return; }
+                if (body.comment) {
+                    await this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/issues/${body.issue_number}/comments`, 'POST', { body: body.comment });
+                }
+                await this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/issues/${body.issue_number}`, 'PATCH', { state: 'closed' });
+                res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: true, number: body.issue_number }));
+            } catch (e: any) {
+                res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+    }
+
+    // ─── MCP Tools ───
+    registerMcpTools(): McpToolDeclaration[] {
+        return [
+            {
+                declaration: { name: "get_recent_commits", description: "Lấy danh sách commit gần đây của dự án local.", inputSchema: { type: "object", properties: { targetDir: { type: "string", description: "Thư mục gốc dự án" }, limit: { type: "number" } }, required: ["targetDir"] } },
+                handler: async (args: any) => {
+                    try { const r = await this.getRecentChanges(args.targetDir, args.limit || 5); return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }] }; }
+                    catch (e: any) { return { isError: true, content: [{ type: "text", text: `Git Error: ${e.message}` }] }; }
+                }
+            },
+            {
+                declaration: { name: "get_file_history", description: "Lấy lịch sử thay đổi (patch) của file cụ thể.", inputSchema: { type: "object", properties: { targetDir: { type: "string" }, filePath: { type: "string" }, limit: { type: "number" } }, required: ["targetDir", "filePath"] } },
+                handler: async (args: any) => {
+                    try { const { stdout } = await execAsync(`git log -p -n ${args.limit || 3} -- "${args.filePath}"`, { cwd: args.targetDir }); return { content: [{ type: "text", text: stdout || "No history found." }] }; }
+                    catch (e: any) { return { isError: true, content: [{ type: "text", text: `Git Error: ${e.message}` }] }; }
+                }
+            },
+            {
+                declaration: { name: "analyze_github_repo", description: "Clone repo từ GitHub URL và chuẩn bị để phân tích kiến trúc.", inputSchema: { type: "object", properties: { url: { type: "string", description: "GitHub URL (https://github.com/owner/repo)" } }, required: ["url"] } },
+                handler: async (args: any) => {
+                    const parsed = this.parseGitHubUrl(args.url);
+                    if (!parsed) return { isError: true, content: [{ type: "text", text: "Invalid GitHub URL" }] };
+                    try {
+                        const dir = await this.cloneOrPull(parsed.owner, parsed.repo);
+                        return { content: [{ type: "text", text: `Cloned ${parsed.owner}/${parsed.repo} to ${dir}. Use analyze_project with targetDir="${dir}" to analyze.` }] };
+                    } catch (e: any) { return { isError: true, content: [{ type: "text", text: `Clone failed: ${e.message}` }] }; }
+                }
+            },
+            {
+                declaration: { name: "get_github_activity", description: "Lấy hoạt động gần đây trên GitHub (commits, PRs, issues).", inputSchema: { type: "object", properties: { url: { type: "string", description: "GitHub URL" } }, required: ["url"] } },
+                handler: async (args: any) => {
+                    const parsed = this.parseGitHubUrl(args.url);
+                    if (!parsed) return { isError: true, content: [{ type: "text", text: "Invalid GitHub URL" }] };
+                    try {
+                        const [commits, pulls] = await Promise.all([
+                            this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/commits?per_page=10`),
+                            this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/pulls?state=all&per_page=10`),
+                        ]);
+                        const summary = { commits: commits.map((c: any) => `${c.sha?.substring(0,7)} ${c.commit?.message?.split('\n')[0]} (${c.commit?.author?.name})`), pulls: pulls.map((p: any) => `#${p.number} ${p.title} [${p.state}] by ${p.user?.login}`) };
+                        return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+                    } catch (e: any) { return { isError: true, content: [{ type: "text", text: `GitHub Error: ${e.message}` }] }; }
+                }
+            },
+            {
+                declaration: { name: "list_github_issues", description: "Đồng bộ danh sách GitHub Issues. Trả về tất cả open issues với title, labels, body, file liên quan. Dùng để IDE biết cần fix gì.", inputSchema: { type: "object", properties: { url: { type: "string", description: "GitHub repo URL" }, state: { type: "string", description: "Filter: open, closed, all", default: "open" }, label: { type: "string", description: "Filter theo label (vd: sub-ai-audit, security)" } }, required: ["url"] } },
+                handler: async (args: any) => {
+                    const parsed = this.parseGitHubUrl(args.url);
+                    if (!parsed) return { isError: true, content: [{ type: "text", text: "Invalid GitHub URL" }] };
+                    try {
+                        let endpoint = `/repos/${parsed.owner}/${parsed.repo}/issues?state=${args.state || 'open'}&per_page=30`;
+                        if (args.label) endpoint += `&labels=${args.label}`;
+                        const data = await this.ghFetch(endpoint);
+                        const issues = data.filter((i: any) => !i.pull_request).map((i: any) => ({
+                            number: i.number, title: i.title, state: i.state,
+                            labels: i.labels?.map((l: any) => l.name) || [],
+                            author: i.user?.login, created_at: i.created_at?.substring(0, 10),
+                            file: i.title?.match(/in (.+)$|file (.+?) \(/)?.[1] || i.title?.match(/file (.+?) \(/)?.[1] || '',
+                            body: i.body?.substring(0, 500) || '',
+                            url: i.html_url,
+                        }));
+                        const summary = `📋 ${issues.length} issues (${args.state || 'open'}):\n` +
+                            issues.map((i: any) => `  #${i.number} [${i.labels.join(',')}] ${i.title}${i.file ? ` → ${i.file}` : ''}`).join('\n');
+                        return { content: [{ type: "text", text: summary + '\n\n' + JSON.stringify(issues, null, 2) }] };
+                    } catch (e: any) { return { isError: true, content: [{ type: "text", text: `GitHub Error: ${e.message}` }] }; }
+                }
+            },
+            {
+                declaration: { name: "get_github_issue_detail", description: "Lấy chi tiết 1 GitHub Issue cụ thể (body, comments, file liên quan). Dùng để hiểu rõ vấn đề trước khi fix.", inputSchema: { type: "object", properties: { url: { type: "string", description: "GitHub repo URL" }, issue_number: { type: "number", description: "Số issue (#1, #2...)" } }, required: ["url", "issue_number"] } },
+                handler: async (args: any) => {
+                    const parsed = this.parseGitHubUrl(args.url);
+                    if (!parsed) return { isError: true, content: [{ type: "text", text: "Invalid GitHub URL" }] };
+                    try {
+                        const issue = await this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/issues/${args.issue_number}`);
+                        const comments = await this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/issues/${args.issue_number}/comments`);
+                        const detail = {
+                            number: issue.number, title: issue.title, state: issue.state,
+                            author: issue.user?.login, created_at: issue.created_at,
+                            labels: issue.labels?.map((l: any) => l.name),
+                            body: issue.body || '',
+                            comments: comments.map((c: any) => ({ author: c.user?.login, body: c.body, date: c.created_at?.substring(0, 10) })),
+                        };
+                        return { content: [{ type: "text", text: JSON.stringify(detail, null, 2) }] };
+                    } catch (e: any) { return { isError: true, content: [{ type: "text", text: `GitHub Error: ${e.message}` }] }; }
+                }
+            },
+            {
+                declaration: { name: "close_github_issue", description: "Đóng GitHub Issue sau khi đã fix xong. Có thể thêm comment giải thích.", inputSchema: { type: "object", properties: { url: { type: "string", description: "GitHub repo URL" }, issue_number: { type: "number", description: "Số issue cần đóng" }, comment: { type: "string", description: "Comment giải thích đã fix như thế nào (optional)" } }, required: ["url", "issue_number"] } },
+                handler: async (args: any) => {
+                    if (!this.getToken()) return { isError: true, content: [{ type: "text", text: "GitHub token required. Set GITHUB_TOKEN in .env" }] };
+                    const parsed = this.parseGitHubUrl(args.url);
+                    if (!parsed) return { isError: true, content: [{ type: "text", text: "Invalid GitHub URL" }] };
+                    try {
+                        if (args.comment) {
+                            await this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/issues/${args.issue_number}/comments`, 'POST', { body: args.comment });
+                        }
+                        await this.ghFetch(`/repos/${parsed.owner}/${parsed.repo}/issues/${args.issue_number}`, 'PATCH', { state: 'closed' });
+                        return { content: [{ type: "text", text: `✅ Issue #${args.issue_number} đã đóng thành công.` }] };
+                    } catch (e: any) { return { isError: true, content: [{ type: "text", text: `GitHub Error: ${e.message}` }] }; }
+                }
+            },
+        ];
+    }
+
+    // ─── Local git helper ───
+    private async getRecentChanges(targetDir: string, limit: number) {
+        const cmd = `git log -n ${limit} --pretty=format:"%h|%an|%ad|%s" --name-status --date=short`;
+        const { stdout } = await execAsync(cmd, { cwd: targetDir });
+        const lines = stdout.split('\n');
+        const commits: any[] = [];
+        let currentCommit: any = null;
+        for (const line of lines) {
+            if (!line.trim()) continue;
+            if (line.includes('|') && /^[a-f0-9]{7,40}\|/.test(line)) {
+                const parts = line.split('|');
+                currentCommit = { hash: parts[0], author: parts[1], date: parts[2], message: parts.slice(3).join('|'), changes: [] };
+                commits.push(currentCommit);
+            } else if (currentCommit) {
+                const parts = line.split('\t');
+                if (parts.length >= 2) {
+                    currentCommit.changes.push({ status: (parts[0] ?? '').trim(), file: (parts[1] ?? '').trim() });
+                }
+            }
+        }
         return commits;
     }
 }

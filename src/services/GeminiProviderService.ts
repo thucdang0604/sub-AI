@@ -1,12 +1,13 @@
 import type { ILLMProviderService } from '../contracts/ILLMProviderService';
 import type { LLMModelInfo } from '../domain/types';
+import { appConfig } from '../core/AppConfig';
 
 export class GeminiProviderService implements ILLMProviderService {
     private apiKey: string;
     private baseUrl: string;
 
     constructor() {
-        this.apiKey = process.env.GEMINI_API_KEY || '';
+        this.apiKey = appConfig.geminiApiKey;
         this.baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
     }
 
